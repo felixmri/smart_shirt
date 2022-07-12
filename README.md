@@ -5,4 +5,4 @@
 ### Files 
 
 - **main.py**: File containing main code for data processing and ML algorithm implementation.
--**main.ipybn**: Jupyter notebook version of main.py. 
+- **main.ipybn**: Jupyter notebook version of main.py. 
