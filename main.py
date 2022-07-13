@@ -6,6 +6,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.signal import find_peaks
+from scipy.stats import entropy
 
 # For ML:
 import time as timer  # for timing code cells.
@@ -185,15 +186,25 @@ X['x_skewness'] = pd.Series(window_list_cent).apply(lambda x: stats.skew(x))
 X['x_kurtosis'] = pd.Series(window_list_cent).apply(lambda x: stats.kurtosis(x))
 # energy
 X['x_energy'] = pd.Series(window_list_cent).apply(lambda x: np.sum(x ** 2) / 100)
+# rms
+X['x_rms'] = pd.Series(window_list_cent).apply(lambda x: np.sqrt(np.mean(x**2)))
 
 # Statistical Features on signal in freq domain:
 lim = int(window_size / 2)
 window_list_cent_fft = pd.Series(window_list_cent).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
 
+# Mean
+X['x_mean_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.mean(x))
+# Max Freq Index
+X['x_max_freq_idx'] = pd.Series(window_list_cent_fft).apply(lambda x: np.argmax(x))
+# Min Freq Index [Ignore first entry since close to zero]
+X['x_min_freq_idx'] = pd.Series(window_list_cent_fft).apply(lambda x: np.argmin(x[1:]))
+# Entropy
+X['x_entr_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: entropy(x))
 # std dev
 X['x_std_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: x.std())
-# min
-X['x_min_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: x.min())
+# min [ignore zeros]
+X['x_min_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.min(x[np.nonzero(x)]))
 # max
 X['x_max_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: x.max())
 # median
