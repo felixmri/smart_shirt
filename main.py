@@ -8,7 +8,7 @@ from scipy import stats
 from scipy.signal import find_peaks
 from scipy.stats import entropy
 
-# For ML:
+# For ML: DEVELOPMENT ONLY?
 import time as timer  # for timing code cells.
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import SequentialFeatureSelector  # For sequential feature sel.
