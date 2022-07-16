@@ -7,8 +7,9 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.signal import find_peaks
 from scipy.stats import entropy
+from scipy.signal import detrend
 
-# For ML: DEVELOPMENT ONLY?
+# For ML:
 import time as timer  # for timing code cells.
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import SequentialFeatureSelector  # For sequential feature sel.
@@ -29,6 +30,138 @@ from sklearn.linear_model import RidgeClassifier, LogisticRegression, Perceptron
 #from cuml.ensemble import RandomForestClassifier
 #from cuml.linear_model import LogisticRegression
 
+# Define function to normalize:
+def normalize(x):
+    x_n = (x - np.min(x))/(np.max(x)-np.min(x))
+    return x_n
+
+# Define function to partition into windows and calculate window-wise metrics
+def window_partition(data, n_sensors, window_size, overlap):
+    """
+    Function to partitioned concatenated data into windows and perform various metrics
+    :param data: PD Dataframe with LABELED concatenated data
+    :param n_sensors: 1=Only first sensor, 2=only second sensor, 3=both sensors
+    :param window_size: Window size
+    :param overlap: Window overlap
+    :return: PD Dataframe of metrics for input to ML model and labels.
+    """
+
+    # Partition data:
+    step_size = window_size - overlap
+
+    # Initialize list to place windows:
+    window_list = [[] for i in range(2)]
+    window_list_fft = [[] for i in range(2)]
+    # Initialize list to place labels:
+    label_list = []
+
+    # Do partitioning:
+    for i in range(0, len(data), step_size):
+        xs = data['Data ch1'].values[i:i + window_size]
+        xs_2 = data['Data ch2'].values[i:i + window_size]
+        lab = stats.mode(data['Labels'].values[i:i + window_size])[0][0]
+
+        window_list[0].append(xs)  # Store windows from ch 1
+        window_list[1].append(xs_2)  # Store windows from ch 2
+        label_list.append(lab)  # Store labels
+
+    # Subtract mean to reduce drift artifact:
+    # window_list_cent = [[],[]]
+    # for i in range(len(window_list[0])):
+    #    window_list_cent[0].append(window_list[0][i] - np.mean(window_list[0][i]))
+    #    window_list_cent[1].append(window_list[1][i] - np.mean(window_list[1][i]
+
+    # Initialize dataframe:
+    X = pd.DataFrame()
+
+    # Statistical Features on signal in time domain for sensor 1:
+    if n_sensors == 1 or n_sensors == 3:
+        # mean
+        X['x_mean'] = pd.Series(window_list[0]).apply(lambda x: x.mean())
+        # std dev
+        X['x_std'] = pd.Series(window_list[0]).apply(lambda x: x.std())
+        # min
+        X['x_min'] = pd.Series(window_list[0]).apply(lambda x: x.min())
+        # max
+        X['x_max'] = pd.Series(window_list[0]).apply(lambda x: x.max())
+        # median
+        X['x_median'] = pd.Series(window_list[0]).apply(lambda x: np.median(x))
+        # number of peaks
+        X['x_peak_count'] = pd.Series(window_list[0]).apply(lambda x: len(find_peaks(x)[0]))
+        # skewness
+        X['x_skewness'] = pd.Series(window_list[0]).apply(lambda x: stats.skew(x))
+        # kurtosis
+        X['x_kurtosis'] = pd.Series(window_list[0]).apply(lambda x: stats.kurtosis(x))
+        # energy
+        X['x_energy'] = pd.Series(window_list[0]).apply(lambda x: np.sum(x ** 2) / 100)
+        # rms
+        X['x_rms'] = pd.Series(window_list[0]).apply(lambda x: np.sqrt(np.mean(x ** 2)))
+
+        # Statistical Features on signal in freq domain:
+        lim = int(window_size / 2)
+        window_list_fft[0] = pd.Series(window_list[0]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
+        # window_list_fft[1] = pd.Series(window_list[1]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
+
+        # Mean
+        X['x_mean_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.mean(x))
+        # Max Freq Index
+        X['x_max_freq_idx'] = pd.Series(window_list_fft[0]).apply(lambda x: np.argmax(x))
+        # Min Freq Index [Ignore first entry since close to zero]
+        X['x_min_freq_idx'] = pd.Series(window_list_fft[0]).apply(lambda x: np.argmin(x[1:]))
+        # Entropy
+        X['x_entr_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: entropy(x))
+        # std dev
+        X['x_std_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: x.std())
+        # min [ignore zeros]
+        X['x_min_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.min(x[np.nonzero(x)]))
+        # max
+        X['x_max_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: x.max())
+        # median
+        X['x_median_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.median(x))
+        # number of peaks
+        X['x_peak_count_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: len(find_peaks(x)[0]))
+        # skewness
+        X['x_skewness_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: stats.skew(x))
+        # kurtosis
+        X['x_kurtosis_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: stats.kurtosis(x))
+        # energy
+        X['x_energy_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.sum(x ** 2) / 100)
+
+    if n_sensors == 2 or n_sensors == 3:
+        # mean
+        X['x_mean_2'] = pd.Series(window_list[1]).apply(lambda x: x.mean())
+        X['x_std_2'] = pd.Series(window_list[1]).apply(lambda x: x.std())
+        X['x_min_2'] = pd.Series(window_list[1]).apply(lambda x: x.min())
+        X['x_max_2'] = pd.Series(window_list[1]).apply(lambda x: x.max())
+        X['x_median_2'] = pd.Series(window_list[1]).apply(lambda x: np.median(x))
+        X['x_peak_count_2'] = pd.Series(window_list[1]).apply(lambda x: len(find_peaks(x)[0]))
+        X['x_skewness_2'] = pd.Series(window_list[1]).apply(lambda x: stats.skew(x))
+        X['x_kurtosis_2'] = pd.Series(window_list[1]).apply(lambda x: stats.kurtosis(x))
+        X['x_energy_2'] = pd.Series(window_list[1]).apply(lambda x: np.sum(x ** 2) / 100)
+        X['x_rms_2'] = pd.Series(window_list[1]).apply(lambda x: np.sqrt(np.mean(x ** 2)))
+
+        # Statistical Features on signal in freq domain:
+        lim = int(window_size / 2)
+        window_list_fft[1] = pd.Series(window_list[1]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
+
+        X['x_mean_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.mean(x))
+        X['x_max_freq_idx_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.argmax(x))
+        X['x_min_freq_idx_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.argmin(x[1:]))
+        X['x_entr_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: entropy(x))
+        X['x_std_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: x.std())
+        X['x_min_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.min(x[np.nonzero(x)]))
+        X['x_max_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: x.max())
+        X['x_median_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.median(x))
+        X['x_peak_count_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: len(find_peaks(x)[0]))
+        X['x_skewness_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: stats.skew(x))
+        X['x_kurtosis_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: stats.kurtosis(x))
+        X['x_energy_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.sum(x ** 2) / 100)
+
+    label_list = pd.Series(label_list)
+
+    return X, label_list
+
+
 # endregion
 
 ## region Load data:
@@ -36,14 +169,15 @@ s1_1 = pd.read_csv('data/11.csv', header=None)  # first subject, sensor 1
 ch1 = s1_1.iloc[:, 1]
 ch2 = s1_1.iloc[:, 2]
 r1_1_ch1 = (-ch1 * 100) / (ch1 - 1)  # channel one (normal breathing)
-r1_1_ch2 = (-ch2 * 100) / (ch2 - 1)  # channel two (normal breathing) [This channel was not used]
+r1_1_ch2 = (-ch2 * 100) / (ch2 - 1)  # channel two (normal breathing)
+
 time = np.arange(0, .015 * len(r1_1_ch1), .015)  # 15 ms per time-point
 
-s1_2 = pd.read_csv('data/12.csv', header=None)  # first subject, sensor 2
+s1_2 = pd.read_csv('data/12.csv', header=None)  # first subject, second trial
 ch1 = s1_2.iloc[:, 1]
 ch2 = s1_2.iloc[:, 2]
 r1_2_ch1 = (-ch1 * 100) / (ch1 - 1)  # channel one (coughing)
-r1_2_ch2 = (-ch2 * 100) / (ch2 - 1)  # channel two (coughing) [This channel was not used]
+r1_2_ch2 = (-ch2 * 100) / (ch2 - 1)  # channel two (coughing)
 
 s2_1 = pd.read_csv('data/21.csv', header=None)
 ch1 = s2_1.iloc[:, 1]
@@ -68,6 +202,24 @@ ch1 = s3_2.iloc[:, 1]
 ch2 = s3_2.iloc[:, 2]
 r3_2_ch1 = (-ch1 * 100) / (ch1 - 1)
 r3_2_ch2 = (-ch2 * 100) / (ch2 - 1)
+# endregion
+
+##  region normalize and detrend data:
+r1_1_ch1 = pd.Series(normalize(detrend(r1_1_ch1)))
+r1_1_ch2 = pd.Series(normalize(detrend(r1_1_ch2)))
+r1_2_ch1 = pd.Series(normalize(detrend(r1_2_ch1)))
+r1_2_ch2 = pd.Series(normalize(detrend(r1_2_ch2)))
+
+r2_1_ch1 = pd.Series(normalize(detrend(r2_1_ch1)))
+r2_1_ch2 = pd.Series(normalize(detrend(r2_1_ch2)))
+r2_2_ch1 = pd.Series(normalize(detrend(r2_2_ch1)))
+r2_2_ch2 = pd.Series(normalize(detrend(r2_2_ch2)))
+
+r3_1_ch1 = pd.Series(normalize(detrend(r3_1_ch1)))
+r3_1_ch2 = pd.Series(normalize(detrend(r3_1_ch2)))
+r3_2_ch1 = pd.Series(normalize(detrend(r3_2_ch1)))
+r3_2_ch2 = pd.Series(normalize(detrend(r3_2_ch2)))
+
 # endregion
 
 ## region Plot data:
@@ -120,107 +272,29 @@ for i in range(3):
     data = locals()[labels[i]]
     axs[i].plot(time, data, 'b')
     axs[i].plot(time, data * label_c, 'r')
-    axs[i].set_ylim([np.max(data)-10, np.max(data)])
 plt.show()
 # endregion
 
-## region Partition into windows
+## region Concatenate data:
 
-# Organize data:
-set_11 = r1_1_ch1  # normal breathing
-set_12 = r1_2_ch1  # coughs
-set_21 = r2_1_ch1
-set_22 = r2_2_ch1
-set_31 = r3_1_ch1
-set_32 = r3_2_ch1
-
-dataset = [set_11, set_12, set_21, set_22, set_31, set_32]
+dataset = [[] for i in range(2)]  # 2D list
+dataset[0] = [r1_1_ch1, r1_2_ch1, r2_1_ch1, r2_2_ch1, r3_1_ch1, r3_2_ch1]  # Data from Ch.1
+dataset[1] = [r1_1_ch2, r1_2_ch2, r2_1_ch2, r2_2_ch2, r3_1_ch2, r3_2_ch2]  # Data from Ch.2
 labels = [label_nc, label_c, label_nc, label_c, label_nc, label_c]
-data = pd.concat([pd.concat(dataset), pd.concat(labels)], axis=1)
+data = pd.concat([pd.concat(dataset[0]), pd.concat(dataset[1]), pd.concat(labels)], axis=1)
 # Rename columns of dataframe:
-name_list = ['Data', 'Labels']
+name_list = ['Data ch1', 'Data ch2', 'Labels']
 data.columns = name_list
-
-# Partition data:
-window_size = 100
-overlap = 0
-step_size = window_size - overlap
-# Initialize list to place windows:
-window_list = []
-label_list = []
-
-# Do partitioning:
-for i in range(0, len(data), step_size):
-    xs = data['Data'].values[i:i + window_size]
-    lab = stats.mode(data['Labels'].values[i:i + window_size])[0][0]
-
-    window_list.append(xs)
-    label_list.append(lab)
-
-# Subtract mean to reduce drift artifact:
-window_list_cent = []
-for i in range(len(window_list)):
-    window_list_cent.append(window_list[i] - np.mean(window_list[i]))
-
+# Reset index
+data.reset_index(drop=True)
 
 # endregion
 
-## region Transform features
-# Initialize DF:
-X = pd.DataFrame()
-# Statistical Features on signal in time domain
-
-# std dev
-X['x_std'] = pd.Series(window_list_cent).apply(lambda x: x.std())
-# min
-X['x_min'] = pd.Series(window_list_cent).apply(lambda x: x.min())
-# max
-X['x_max'] = pd.Series(window_list_cent).apply(lambda x: x.max())
-# median
-X['x_median'] = pd.Series(window_list_cent).apply(lambda x: np.median(x))
-# number of peaks
-X['x_peak_count'] = pd.Series(window_list_cent).apply(lambda x: len(find_peaks(x)[0]))
-# skewness
-X['x_skewness'] = pd.Series(window_list_cent).apply(lambda x: stats.skew(x))
-# kurtosis
-X['x_kurtosis'] = pd.Series(window_list_cent).apply(lambda x: stats.kurtosis(x))
-# energy
-X['x_energy'] = pd.Series(window_list_cent).apply(lambda x: np.sum(x ** 2) / 100)
-# rms
-X['x_rms'] = pd.Series(window_list_cent).apply(lambda x: np.sqrt(np.mean(x**2)))
-
-# Statistical Features on signal in freq domain:
-lim = int(window_size / 2)
-window_list_cent_fft = pd.Series(window_list_cent).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
-
-# Mean
-X['x_mean_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.mean(x))
-# Max Freq Index
-X['x_max_freq_idx'] = pd.Series(window_list_cent_fft).apply(lambda x: np.argmax(x))
-# Min Freq Index [Ignore first entry since close to zero]
-X['x_min_freq_idx'] = pd.Series(window_list_cent_fft).apply(lambda x: np.argmin(x[1:]))
-# Entropy
-X['x_entr_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: entropy(x))
-# std dev
-X['x_std_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: x.std())
-# min [ignore zeros]
-X['x_min_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.min(x[np.nonzero(x)]))
-# max
-X['x_max_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: x.max())
-# median
-X['x_median_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.median(x))
-# number of peaks
-X['x_peak_count_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: len(find_peaks(x)[0]))
-# skewness
-X['x_skewness_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: stats.skew(x))
-# kurtosis
-X['x_kurtosis_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: stats.kurtosis(x))
-# energy
-X['x_energy_fft'] = pd.Series(window_list_cent_fft).apply(lambda x: np.sum(x ** 2) / 100)
+## region partition into windows:
+X, label_list = window_partition(data, 3, 100, 0)
 # endregion
 
 ## region Split into train and test (2/3,1/3)
-label_list = pd.Series(label_list)
 
 X_train = X.iloc[0:320, :]  # First 320 points
 label_train = label_list.iloc[0:320]
@@ -237,7 +311,7 @@ k_list = list()
 f_1 = list()
 parameters = list()
 # Iterate through number of features (dimensions) 12-15:
-for k in range(12, 15):
+for k in range(39, 43):
     df_train_fs = X_train[:]
 
     print(f"Applying SFS with {k} dimensions")
