@@ -13,10 +13,9 @@ from scipy.signal import detrend
 import time as timer  # for timing code cells.
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import SequentialFeatureSelector  # For sequential feature sel.
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV  # To do parameter search
 from sklearn import metrics
 from sklearn.pipeline import make_pipeline  # for grid-search over parameters pipeline.
-
 
 # Classifiers for CPU based computing:
 from sklearn.svm import SVC
@@ -24,31 +23,37 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import RidgeClassifier, LogisticRegression, Perceptron
 
+
 # Only for GPU based computing:
-#from cuml.svm import SVC
-#from cuml.neighbors import KNeighborsClassifier
-#from cuml.ensemble import RandomForestClassifier
-#from cuml.linear_model import LogisticRegression
+# from cuml.svm import SVC
+# from cuml.neighbors import KNeighborsClassifier
+# from cuml.ensemble import RandomForestClassifier
+# from cuml.linear_model import LogisticRegression
 
 # Define function to normalize:
 def normalize(x):
-    x_n = (x - np.min(x))/(np.max(x)-np.min(x))
+    """
+    Function to normalize using: X_n = ( X - X_min ) / ( X_max - X_min). Results in data in [0,1]
+    :param x: Unormalized data
+    :return: Normalized data
+    """
+    x_n = (x - np.min(x)) / (np.max(x) - np.min(x))
     return x_n
 
+
 # Define function to partition into windows and calculate window-wise metrics
-def window_partition(data, n_sensors, window_size, overlap):
+def window_partition(data, n_channels, window_size, overlap):
     """
-    Function to partitioned concatenated data into windows and perform various metrics
-    :param data: PD Dataframe with LABELED concatenated data
-    :param n_sensors: 1=Only first sensor, 2=only second sensor, 3=both sensors
+    Function to partition concatenated data into windows and perform various window wise metrics
+    :param data: PD Dataframe with LABELED and normalized (if needed) concatenated data
+    :param n_channels: 1=Only first channel, 2=only second channel, 3=both channels
     :param window_size: Window size
     :param overlap: Window overlap
-    :return: PD Dataframe of metrics for input to ML model and labels.
+    :return: PD Dataframe of metrics for input to ML model along with labels.
     """
 
     # Partition data:
     step_size = window_size - overlap
-
     # Initialize list to place windows:
     window_list = [[] for i in range(2)]
     window_list_fft = [[] for i in range(2)]
@@ -74,8 +79,8 @@ def window_partition(data, n_sensors, window_size, overlap):
     # Initialize dataframe:
     X = pd.DataFrame()
 
-    # Statistical Features on signal in time domain for sensor 1:
-    if n_sensors == 1 or n_sensors == 3:
+    # Statistical Features on signal in time domain for channel 1:
+    if n_channels == 1 or n_channels == 3:
         # mean
         X['x_mean'] = pd.Series(window_list[0]).apply(lambda x: x.mean())
         # std dev
@@ -98,9 +103,8 @@ def window_partition(data, n_sensors, window_size, overlap):
         X['x_rms'] = pd.Series(window_list[0]).apply(lambda x: np.sqrt(np.mean(x ** 2)))
 
         # Statistical Features on signal in freq domain:
-        lim = int(window_size / 2)
+        lim = int(window_size / 2)  # Take only half of the spectrum since symmetric.
         window_list_fft[0] = pd.Series(window_list[0]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
-        # window_list_fft[1] = pd.Series(window_list[1]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
 
         # Mean
         X['x_mean_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.mean(x))
@@ -127,7 +131,7 @@ def window_partition(data, n_sensors, window_size, overlap):
         # energy
         X['x_energy_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.sum(x ** 2) / 100)
 
-    if n_sensors == 2 or n_sensors == 3:
+    if n_channels == 2 or n_channels == 3:
         # mean
         X['x_mean_2'] = pd.Series(window_list[1]).apply(lambda x: x.mean())
         X['x_std_2'] = pd.Series(window_list[1]).apply(lambda x: x.std())
@@ -226,30 +230,42 @@ r3_2_ch2 = pd.Series(normalize(detrend(r3_2_ch2)))
 fig, axs = plt.subplots(4, 1)
 fig.suptitle('Subject 1')
 axs[0].plot(time, r1_1_ch1)
+axs[0].set_ylabel("Channel 1")
 axs[1].plot(time, r1_1_ch2)
+axs[1].set_ylabel("Channel 2")
 axs[2].plot(time, r1_2_ch1)
+axs[2].set_ylabel("Channel 1")
 axs[3].plot(time, r1_2_ch2)
+axs[3].set_ylabel("Channel 2")
 plt.show()
 
 fig, axs = plt.subplots(4, 1)
 fig.suptitle('Subject 2')
 axs[0].plot(time, r2_1_ch1)
+axs[0].set_ylabel("Channel 1")
 axs[1].plot(time, r2_1_ch2)
+axs[1].set_ylabel("Channel 2")
 axs[2].plot(time, r2_2_ch1)
+axs[2].set_ylabel("Channel 1")
 axs[3].plot(time, r2_2_ch2)
+axs[3].set_ylabel("Channel 2")
 plt.show()
 
 fig, axs = plt.subplots(4, 1)
 fig.suptitle('Subject 3')
 axs[0].plot(time, r3_1_ch1)
+axs[0].set_ylabel("Channel 1")
 axs[1].plot(time, r3_1_ch2)
+axs[1].set_ylabel("Channel 2")
 axs[2].plot(time, r3_2_ch1)
+axs[2].set_ylabel("Channel 1")
 axs[3].plot(time, r3_2_ch2)
+axs[3].set_ylabel("Channel 2")
 plt.show()
 
 # endregion
 
-## region Create labels for coughing events:
+## region Create labels for coughing events at 20-25, 60-65, and 95-100 seconds.
 label1 = (time > 20) * (time < 25)
 label2 = (time > 60) * (time < 65)
 label3 = (time > 95) * (time < 100)
@@ -265,13 +281,16 @@ label_nc = pd.DataFrame(label_nc)
 label_nc = label_nc.iloc[:, 0]
 
 # Plot subjects with red labeled as cough:
-labels = ['r1_2_ch1', 'r2_2_ch1', 'r3_2_ch1']
-fig, axs = plt.subplots(3, 1)
+labels = ['r1_2_ch1', 'r1_2_ch2', 'r2_2_ch1', 'r2_2_ch2', 'r3_2_ch1', 'r3_2_ch2']
+fig, axs = plt.subplots(6, 1)
 fig.suptitle("Labeled Events")
-for i in range(3):
+for i in range(6):
     data = locals()[labels[i]]
-    axs[i].plot(time, data, 'b')
-    axs[i].plot(time, data * label_c, 'r')
+    axs[i].plot(time, data, 'b', label='No cough')
+    axs[i].plot(time, data * label_c, 'r', label='cough')
+    if i == 5:
+        handles, labels = axs[i].get_legend_handles_labels()
+        fig.legend(handles, labels, loc='upper right')
 plt.show()
 # endregion
 
@@ -286,21 +305,24 @@ data = pd.concat([pd.concat(dataset[0]), pd.concat(dataset[1]), pd.concat(labels
 name_list = ['Data ch1', 'Data ch2', 'Labels']
 data.columns = name_list
 # Reset index
-data.reset_index(drop=True)
+data.reset_index(drop=True, inplace=True)
 
 # endregion
 
 ## region partition into windows:
+# window length: 100, no overlap, data from both channels
 X, label_list = window_partition(data, 3, 100, 0)
 # endregion
 
 ## region Split into train and test (2/3,1/3)
 
-X_train = X.iloc[0:320, :]  # First 320 points
-label_train = label_list.iloc[0:320]
+index = np.int32(np.floor(X.shape[0]*2/3))  # Index up to 2/3 of datapoints.
 
-X_test = X.iloc[320:X.shape[0], :]
-label_test = label_list.iloc[320:label_list.shape[0]]
+X_train = X.iloc[0:index, :]  # First 2/3 data points
+label_train = label_list.iloc[0:index]
+
+X_test = X.iloc[index:X.shape[0], :]
+label_test = label_list.iloc[index:label_list.shape[0]]
 # endregion
 
 ## region Implement ML: SVC
@@ -310,8 +332,9 @@ start = timer.time()
 k_list = list()
 f_1 = list()
 parameters = list()
-# Iterate through number of features (dimensions) 12-15:
-for k in range(39, 43):
+
+# Iterate through number of features (dimensions):
+for k in range(10, 13):
     df_train_fs = X_train[:]
 
     print(f"Applying SFS with {k} dimensions")
@@ -349,16 +372,23 @@ print(f'The optimal number of dimension is {best_dim} with'
       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
       f' with parameters {best_params}')
 
-
 end = timer.time()
 
-print(f'Elapsed time is {end-start} seconds')
+print(f'Elapsed time is {end - start} seconds')
 
 # Train with optimal parameters and dimensions:
 
-pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
-                     SVC(C=best_params['svc__C'], kernel=best_params['svc__kernel'], gamma=best_params['svc__gamma'],
-                         class_weight=best_params['svc__class_weight']))
+if best_params['svc__kernel'] == 'linear':
+    pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
+                         SVC(C=best_params['svc__C'], kernel=best_params['svc__kernel'], gamma=best_params['svc__gamma'],
+                             class_weight=best_params['svc__class_weight']))
+
+
+if best_params['svc__kernel'] == 'rbf':
+    pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
+                         SVC(C=best_params['svc__C'], kernel=best_params['svc__kernel'], gamma=best_params['svc__gamma'],
+                             class_weight=best_params['svc__class_weight']))
+
 # Fit model:
 pipe.fit(X_train, np.array(label_train).ravel())
 
@@ -402,7 +432,7 @@ for k in range(12, 15):
         {'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),  # 8,9,10
          'kneighborsclassifier__weights': ('uniform', 'distance'),
          'kneighborsclassifier__metric': ('minkowski', 'chebyshev')}
-            ]
+    ]
 
     pipe = make_pipeline(StandardScaler(), KNeighborsClassifier())
     gs = GridSearchCV(pipe, params, scoring='f1')
@@ -420,16 +450,14 @@ print(f'The optimal number of dimension is {best_dim} with'
       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
       f' with parameters {best_params}')
 
-
 end = timer.time()
 
-print(f'Elapsed time is {end-start} seconds')
+print(f'Elapsed time is {end - start} seconds')
 
 # Train with optimal parameters and dimensions:
 metric_ = best_params['kneighborsclassifier__metric']
 n_neighbors_ = best_params['kneighborsclassifier__n_neighbors']
 weights_ = best_params['kneighborsclassifier__weights']
-
 
 pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
                      KNeighborsClassifier(metric=metric_, n_neighbors=n_neighbors_,
@@ -496,21 +524,19 @@ print(f'The optimal number of dimension is {best_dim} with'
       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
       f' with parameters {best_params}')
 
-
 end = timer.time()
 
-print(f'Elapsed time is {end-start} seconds')
+print(f'Elapsed time is {end - start} seconds')
 
 # Train with optimal parameters and dimensions:
 max_depth_ = best_params['randomforestclassifier__max_depth']
 max_features_ = best_params['randomforestclassifier__max_features']
 n_estimators_ = best_params['randomforestclassifier__n_estimators']
 
-
 pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
                      StandardScaler(),
                      RandomForestClassifier(max_depth=max_depth_, max_features=max_features_,
-                     n_estimators=n_estimators_))
+                                            n_estimators=n_estimators_))
 # Fit model:
 pipe.fit(X_train, np.array(label_train).ravel())
 
