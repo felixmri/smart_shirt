@@ -1,21 +1,27 @@
 ## region Import Dependencies and define functions:
+import warnings
+warnings.filterwarnings('ignore')
 
 # For data processing & plotting:
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import time as timer  # for timing code cells.
 from scipy import stats
 from scipy.signal import find_peaks
 from scipy.stats import entropy
 from scipy.signal import detrend
 
 # For ML:
-import time as timer  # for timing code cells.
+
+from imblearn.pipeline import make_pipeline
+from imblearn.over_sampling import SMOTE, RandomOverSampler, ADASYN
+
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import SequentialFeatureSelector  # For sequential feature sel.
-from sklearn.model_selection import GridSearchCV  # To do parameter search
+from sklearn.model_selection import GridSearchCV, KFold, train_test_split  # To do parameter search
 from sklearn import metrics
-from sklearn.pipeline import make_pipeline  # for grid-search over parameters pipeline.
 
 # Classifiers for CPU based computing:
 from sklearn.svm import SVC
@@ -23,12 +29,17 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import RidgeClassifier, LogisticRegression, Perceptron
 
+# Only for GPU based computing: [ comment out on CPU ]
+# import os  # Need both of these, run before importing cuml.
 
-# Only for GPU based computing:
-# from cuml.svm import SVC
-# from cuml.neighbors import KNeighborsClassifier
-# from cuml.ensemble import RandomForestClassifier
-# from cuml.linear_model import LogisticRegression
+#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+
+#from cuml.svm import SVC
+#from cuml.neighbors import KNeighborsClassifier
+#from cuml.ensemble import RandomForestClassifier
+#from sklearn.linear_model import RidgeClassifier
+
 
 # Define function to read and normalize data:
 def read_data(file_path, normalize=True):
@@ -62,7 +73,6 @@ def read_data(file_path, normalize=True):
 
     return pd.Series(ch_1), pd.Series(ch_2)
 
-
 # Define function to plot data:
 def plot_data(ch1, ch2, title):
     # define time axis:
@@ -76,7 +86,6 @@ def plot_data(ch1, ch2, title):
     axs[1].plot(time, ch2)
     axs[1].set_ylabel("Channel 2")
     plt.show()
-
 
 # Define function to create labels
 def create_labels(time_length, cough_event):
@@ -108,7 +117,6 @@ def create_labels(time_length, cough_event):
     label_nc = label_nc.iloc[:, 0]
 
     return labels, label_nc
-
 
 # Define function to plot labeled data:
 def plot_labels(list_of_data):
@@ -150,7 +158,6 @@ def plot_labels(list_of_data):
 
     plt.show()
 
-
 # Define function to concatenate data into dataframe used for ML:
 def concatenate_data(list_of_data_plt):
     """
@@ -160,11 +167,13 @@ def concatenate_data(list_of_data_plt):
     :return: Concatenated pd dataframe.
     """
     # initialize dataframe to concatenate data:
-    data = pd.DataFrame(columns=[0, 1, 0])  # Needed to match automatic column name of data_temp for concatenation
+    data = pd.DataFrame(columns=[1, 2, 0])  # Needed to match automatic column name of data_temp for concatenation
 
     # iteratively populate dataframe:
     for i in range(len(list_of_data_plt)):
-        data_temp = pd.concat([list_of_data_plt[i][0], list_of_data_plt[i][1], list_of_data_plt[i][2]], axis=1)
+        data_temp = pd.concat(
+            [list_of_data_plt[i][0].rename(1), list_of_data_plt[i][1].rename(2), list_of_data_plt[i][2].rename(0)],
+            axis=1)
         data = pd.concat([data, data_temp])
 
     # Reset index and rename columns:
@@ -176,9 +185,8 @@ def concatenate_data(list_of_data_plt):
 
     return data
 
-
 # Define function to partition into windows and calculate window-wise metrics
-def window_partition(data, n_channels, window_size, overlap):
+def window_partition(data, n_channels, window_size, overlap, balanced=True):
     """
     Function to partition concatenated data into windows and perform various window wise metrics
     :param data: PD Dataframe with LABELED and normalized (if needed) concatenated data
@@ -205,12 +213,6 @@ def window_partition(data, n_channels, window_size, overlap):
         window_list[0].append(xs)  # Store windows from ch 1
         window_list[1].append(xs_2)  # Store windows from ch 2
         label_list.append(lab)  # Store labels
-
-    # Subtract mean to reduce drift artifact:
-    # window_list_cent = [[],[]]
-    # for i in range(len(window_list[0])):
-    #    window_list_cent[0].append(window_list[0][i] - np.mean(window_list[0][i]))
-    #    window_list_cent[1].append(window_list[1][i] - np.mean(window_list[1][i]
 
     # Initialize dataframe:
     X = pd.DataFrame()
@@ -239,15 +241,15 @@ def window_partition(data, n_channels, window_size, overlap):
         X['x_rms'] = pd.Series(window_list[0]).apply(lambda x: np.sqrt(np.mean(x ** 2)))
 
         # Statistical Features on signal in freq domain:
-        lim = int(window_size / 2)  # Take only half of the spectrum since symmetric.
-        window_list_fft[0] = pd.Series(window_list[0]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
+        # lim = int(window_size / 2)  # Take only half of the spectrum since symmetric.
+        window_list_fft[0] = pd.Series(window_list[0]).apply(lambda x: np.abs(np.fft.fft(x))[1:])
 
         # Mean
         X['x_mean_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: np.mean(x))
         # Max Freq Index
         X['x_max_freq_idx'] = pd.Series(window_list_fft[0]).apply(lambda x: np.argmax(x))
         # Min Freq Index [Ignore first entry since close to zero]
-        X['x_min_freq_idx'] = pd.Series(window_list_fft[0]).apply(lambda x: np.argmin(x[1:]))
+        X['x_min_freq_idx'] = pd.Series(window_list_fft[0]).apply(lambda x: np.argmin(x))
         # Entropy
         X['x_entr_fft'] = pd.Series(window_list_fft[0]).apply(lambda x: entropy(x))
         # std dev
@@ -281,12 +283,12 @@ def window_partition(data, n_channels, window_size, overlap):
         X['x_rms_2'] = pd.Series(window_list[1]).apply(lambda x: np.sqrt(np.mean(x ** 2)))
 
         # Statistical Features on signal in freq domain:
-        lim = int(window_size / 2)
-        window_list_fft[1] = pd.Series(window_list[1]).apply(lambda x: np.abs(np.fft.fft(x))[0:lim])
+        # lim = int(window_size / 2)
+        window_list_fft[1] = pd.Series(window_list[1]).apply(lambda x: np.abs(np.fft.fft(x))[1:])
 
         X['x_mean_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.mean(x))
         X['x_max_freq_idx_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.argmax(x))
-        X['x_min_freq_idx_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.argmin(x[1:]))
+        X['x_min_freq_idx_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.argmin(x))
         X['x_entr_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: entropy(x))
         X['x_std_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: x.std())
         X['x_min_fft_2'] = pd.Series(window_list_fft[1]).apply(lambda x: np.min(x[np.nonzero(x)]))
@@ -301,9 +303,8 @@ def window_partition(data, n_channels, window_size, overlap):
 
     return X, label_list
 
-
 # Define function to take processed data and implement various ML algorithms
-def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=range(35, 36)):
+def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=True, k_range=range(40, 45), con_mtx=True):
     '''
     Function to implement various ML algorithms on processed data.
     Splits data into test and train (2/3,1/3)
@@ -314,21 +315,26 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
     :param knn: KNN classifier
     :param rfc: RF Classifier
     :param k_range: range of dimensions for sequential feature selection
+    :param con_mtx: If true, plot confusion matrix.
+    :param balanced: If true, trains model with balanced data.
     :return: None
     '''
 
+    # Find index to get 2/3 of the data for training:
+    index = np.int32(np.floor(X.shape[0] * (3 / 4)))
     # Split into test and train:
-    index = np.int32(np.floor(X.shape[0] * (2 / 3)))  # Index up to 2/3 of datapoints.
-
     X_train = X.iloc[0:index, :]  # First 2/3 data points
     label_train = label_list.iloc[0:index]
 
     X_test = X.iloc[index:X.shape[0], :]
     label_test = label_list.iloc[index:label_list.shape[0]]
 
+    X_train, X_test, label_train, label_test = train_test_split(X, label_list, test_size=.25, random_state=42)
+    print('Implementing ML algorithms... Train/Test split used is 75/25.')
     # Implement sfs:
-
     if sfs:
+
+        kept_dim = list()
 
         start = timer.time()
         # Apply feature selection
@@ -351,6 +357,8 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
         else:
             print('Select a Valid Classifier')
 
+        # kf = KFold(n_splits=5, shuffle=False)
+
         # Apply SFS
         for k in k_range:
 
@@ -362,6 +370,9 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
             sfs = SequentialFeatureSelector(rdg_cls, n_features_to_select=k, scoring='f1')
             sfs.fit(df_train_fs, np.array(label_train).ravel())
 
+            # Store kept dimensions for analysis:
+            kept_dim.append(sfs.get_feature_names_out())
+
             # Apply to test and train:
             df_train_fs = sfs.transform(df_train_fs)
             df_train_fs = pd.DataFrame(df_train_fs, columns=sfs.get_feature_names_out())
@@ -369,15 +380,22 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
             # SVC Classifier, perform grid-search for each k:
             if svc:
                 params = [
-                    {'standardscaler': ['passthrough', StandardScaler()],
-                     'svc__C': [1, 10, 100, 1000], 'svc__kernel': ['rbf'], 'svc__gamma': [0.001, 0.0001],
+                    {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                     'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                     'svc__C': [1, 10, 100, 1000],
+                     'svc__kernel': ['rbf'],
+                     'svc__gamma': [0.001, 0.0001],
                      'svc__class_weight': [None, 'balanced']},
-                    {'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
-                     'svc__C': [1, 10, 100, 1000], 'svc__kernel': ['linear'], 'svc__class_weight': [None, 'balanced']}
+
+                    {'smote': ['passthrough', SMOTE(random_state=42), SMOTE(), RandomOverSampler()],
+                     'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                     'svc__C': [1, 10, 100, 1000],
+                     'svc__kernel': ['linear'],
+                     'svc__class_weight': [None, 'balanced']}
                 ]
 
-                pipe = make_pipeline(StandardScaler(), SVC())
-                gs = GridSearchCV(pipe, params, scoring='f1')
+                pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), SVC())
+                gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
                 gs.fit(df_train_fs, np.array(label_train).ravel())
 
                 # Store best f1 score for each dimension k:
@@ -388,13 +406,15 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
             # KNN classifier, perform grid-search for each k:
             if knn:
                 params = [
-                    {'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),  # 8,9,10
-                     'kneighborsclassifier__weights': ('uniform', 'distance'),
+                    {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                     'standardscaler': ['passthrough', StandardScaler()],
+                     'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),
+                     # 'kneighborsclassifier__weights': ('uniform', 'distance'),
                      'kneighborsclassifier__metric': ('minkowski', 'chebyshev')}
                 ]
 
-                pipe = make_pipeline(StandardScaler(), KNeighborsClassifier())
-                gs = GridSearchCV(pipe, params, scoring='f1')
+                pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), KNeighborsClassifier())
+                gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
                 gs.fit(df_train_fs, np.array(label_train).ravel())
 
                 # Store best f1 score for each dimension k:
@@ -405,13 +425,15 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
             # Random Forest Classifier:
             if rfc:
                 params = [{
-                    'randomforestclassifier__n_estimators': [100, 200],
-                    'randomforestclassifier__max_depth': [4, 5, 6],
-                    'randomforestclassifier__max_features': ['auto', 'sqrt', 'log2']
+                    'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                    'standardscaler': ['passthrough', StandardScaler()],
+                    'randomforestclassifier__n_estimators': [50, 100, 200],
+                    'randomforestclassifier__max_depth': [4, 6, 10, 12],
+                    # 'randomforestclassifier__max_features': ['auto', 'sqrt', 'log2']
                 }]
 
-                pipe = make_pipeline(StandardScaler(), RandomForestClassifier())
-                gs = GridSearchCV(pipe, params, scoring='f1')
+                pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), RandomForestClassifier())
+                gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
                 gs.fit(np.float32(df_train_fs), np.float32(np.array(label_train).ravel()))
 
                 k_list_rfc.append(k)
@@ -420,130 +442,386 @@ def implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=
 
         end = timer.time()
 
-        print(f'Elapsed time for SFS is {end - start} seconds')
+        print()
+        print(f'Elapsed time for SFS is {np.round(end - start, 2)} seconds')
+        print()
 
-    # find the dimension that gives the best f-1 score and corresponding parameters for all classifiers:
+        # find the dimension that gives the best f-1 score and corresponding parameters for all classifiers:
 
-    if svc:
+        if svc:
 
-        best_dim_svc = k_list_svc[np.array(f_1_svc).argmax()]  # Retrieve best dimension
-        best_params_svc = parameters_svc[np.array(f_1_svc).argmax()]  # Retrieve best parameters
+            best_dim_svc = k_list_svc[np.array(f_1_svc).argmax()]  # Retrieve best dimension
+            best_params_svc = parameters_svc[np.array(f_1_svc).argmax()]  # Retrieve best parameters
 
-        print(f'For the SVC classifier, '
-              f'The optimal number of dimension is {best_dim_svc} with'
-              f' an F1 score of {np.round(np.array(f_1_svc).max(), 3)}'
-              f' with parameters {best_params_svc}')
+            print(f'For the SVC classifier, '
+                  f'The optimal number of dimensions is {best_dim_svc}'
+                  f' with an F1 score of {np.round(np.array(f_1_svc).max(), 2)}.'
+                  f' The ideal parameters are: ')
 
-        # Train with optimal parameters and dimensions:
-        print('Training the SVC classifier with optimal parameters')
-        C_ = best_params_svc['svc__C']
-        kernel_ = best_params_svc['svc__kernel']
-        weight_ = best_params_svc['svc__class_weight']
+            for key, value in best_params_svc.items():
+                print(key, ' : ', value)
 
-        if best_params_svc['svc__kernel'] == 'linear':
-            pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_svc, scoring='f1'),
-                                 SVC(C=C_, kernel=kernel_, class_weight=weight_))
+            print(f'and the kept dimensions are:')
+            for values in kept_dim[np.array(f_1_svc).argmax()]:
+                print(values)
 
-        if best_params_svc['svc__kernel'] == 'rbf':
-            pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_svc, scoring='f1'),
-                                 SVC(C=C_, kernel=kernel_,
-                                     gamma=best_params_svc['svc__gamma'],
-                                     class_weight=weight_))
+            # Train with optimal parameters and dimensions:
+            print('Training the SVC classifier with optimal parameters...')
+            C_ = best_params_svc['svc__C']
+            kernel_ = best_params_svc['svc__kernel']
+            weight_ = best_params_svc['svc__class_weight']
 
-        # Fit model:
-        pipe.fit(X_train, np.array(label_train).ravel())
+            if best_params_svc['svc__kernel'] == 'linear':
+                pipe = make_pipeline(
+                    SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_svc, scoring='f1'),
+                    SVC(C=C_, kernel=kernel_, class_weight=weight_))
 
-        # Evaluate on test set:
-        pred = pipe.predict(X_test)
-        f1_score = metrics.f1_score(np.array(label_test), pred)
-        acc = metrics.accuracy_score(np.array(label_test), pred)
-        print(f'The F1 score on the test set with the SVC classifier is {f1_score} and the accuracy is {acc}')
+            if best_params_svc['svc__kernel'] == 'rbf':
+                pipe = make_pipeline(
+                    SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_svc, scoring='f1'),
+                    SVC(C=C_, kernel=kernel_,
+                        gamma=best_params_svc['svc__gamma'],
+                        class_weight=weight_))
 
-        # Confusion matrix:
-        cm = metrics.confusion_matrix(np.array(label_test), pred)
-        cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-        plt.title("Confusion Matrix for SVC Classifier")
-        plt.show()
+            # Fit model:
+            pipe.fit(X_train, np.array(label_train).ravel())
 
-    if knn:
-        best_dim_knn = k_list_knn[np.array(f_1_knn).argmax()]  # Retrieve best dimension
-        best_params_knn = parameters_knn[np.array(f_1_knn).argmax()]  # Retrieve best parameters
+            # Evaluate on test set:
+            pred = pipe.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the SVC classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for SVC Classifier")
+                plt.show()
 
-        print(f'For the KNN classifier, '
-              f'The optimal number of dimension is {best_dim_knn} with'
-              f' an F1 score of {np.round(np.array(f_1_knn).max(), 3)}'
-              f' with parameters {best_params_knn}')
+        if knn:
+            best_dim_knn = k_list_knn[np.array(f_1_knn).argmax()]  # Retrieve best dimension
+            best_params_knn = parameters_knn[np.array(f_1_knn).argmax()]  # Retrieve best parameters
 
-        # Train with best parameters and plot confusion matrix:
-        print('Training the KNN classifier with optimal parameters')
-        metric_ = best_params_knn['kneighborsclassifier__metric']
-        n_neighbors_ = best_params_knn['kneighborsclassifier__n_neighbors']
-        weights_ = best_params_knn['kneighborsclassifier__weights']
+            print(f'For the KNN classifier, '
+                  f'The optimal number of dimensions is {best_dim_knn}'
+                  f' with an F1 score of {np.round(np.array(f_1_knn).max(), 2)}.'
+                  f' The ideal parameters are: ')
 
-        pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_knn, scoring='f1'),
-                             KNeighborsClassifier(metric=metric_, n_neighbors=n_neighbors_,
-                                                  weights=weights_))
-        # Fit model:
-        pipe.fit(X_train, np.array(label_train).ravel())
+            for key, value in best_params_knn.items():
+                print(key, ' : ', value)
 
-        # Evaluate on test set:
-        pred = pipe.predict(X_test)
-        f1_score = metrics.f1_score(np.array(label_test), pred)
-        acc = metrics.accuracy_score(np.array(label_test), pred)
-        print(f'The F1 score on the test set with the KNN classifier is {f1_score} and the accuracy is {acc}')
+            print(f'and the kept dimensions are:')
+            for values in kept_dim[np.array(f_1_knn).argmax()]:
+                print(values)
 
-        # Confusion matrix:
-        cm = metrics.confusion_matrix(np.array(label_test), pred)
-        cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-        plt.title("Confusion Matrix for KNN Classifier")
-        plt.show()
+            # Train with best parameters and plot confusion matrix:
+            print('Training the KNN classifier with optimal parameters...')
 
-    if rfc:
-        best_dim_rfc = k_list_rfc[np.array(f_1_rfc).argmax()]  # Retrieve best dimension
-        best_params_rfc = parameters_rfc[np.array(f_1_rfc).argmax()]  # Retrieve best parameters
+            metric_ = best_params_knn['kneighborsclassifier__metric']
+            n_neighbors_ = best_params_knn['kneighborsclassifier__n_neighbors']
+            # weights_ = best_params_knn['kneighborsclassifier__weights']
 
-        print(f'For the RFC classifier, '
-              f'The optimal number of dimension is {best_dim_rfc} with'
-              f' an F1 score of {np.round(np.array(f_1_rfc).max(), 3)}'
-              f' with parameters {best_params_rfc}')
+            pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim_knn, scoring='f1'),
+                                 KNeighborsClassifier(metric=metric_, n_neighbors=n_neighbors_
+                                                      ))
+            # Fit model:
+            pipe.fit(X_train, np.array(label_train).ravel())
 
-        # Train with best parameters and plot confusion matrix:
-        print('Training the RFC classifier with optimal parameters')
-        max_depth_ = best_params_rfc['randomforestclassifier__max_depth']
-        max_features_ = best_params_rfc['randomforestclassifier__max_features']
-        n_estimators_ = best_params_rfc['randomforestclassifier__n_estimators']
+            # Evaluate on test set:
+            pred = pipe.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the KNN classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for KNN Classifier")
+                plt.show()
 
-        pipe = make_pipeline(StandardScaler(),
-                             RandomForestClassifier(max_depth=max_depth_, max_features=max_features_,
-                                                    n_estimators=n_estimators_))
+        if rfc:
+            best_dim_rfc = k_list_rfc[np.array(f_1_rfc).argmax()]  # Retrieve best dimension
+            best_params_rfc = parameters_rfc[np.array(f_1_rfc).argmax()]  # Retrieve best parameters
 
-        # Fit model:
-        pipe.fit(X_train, np.array(label_train).ravel())
+            print(f'For the RFC classifier, '
+                  f'The optimal number of dimensions is {best_dim_rfc}'
+                  f' with an F1 score of {np.round(np.array(f_1_rfc).max(), 2)}.'
+                  f' The ideal parameters are: ')
 
-        # Evaluate on test set:
-        pred = pipe.predict(X_test)
-        f1_score = metrics.f1_score(np.array(label_test), pred)
-        acc = metrics.accuracy_score(np.array(label_test), pred)
-        print(f'The F1 score on the test set with the RFC classifier is {f1_score} and the accuracy is {acc}')
+            for key, value in best_params_rfc.items():
+                print(key, ' : ', value)
 
-        # Confusion matrix:
-        cm = metrics.confusion_matrix(np.array(label_test), pred)
-        cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-        plt.title("Confusion Matrix for RFC Classifier")
-        plt.show()
+            print(f'and the kept dimensions are:')
+            for values in kept_dim[np.array(f_1_rfc).argmax()]:
+                print(values)
 
+            # Train with best parameters and plot confusion matrix:
+            print('Training the RFC classifier with optimal parameters...')
+            max_depth_ = best_params_rfc['randomforestclassifier__max_depth']
+            # max_features_ = best_params_rfc['randomforestclassifier__max_features']
+            n_estimators_ = best_params_rfc['randomforestclassifier__n_estimators']
+
+            pipe = make_pipeline(RandomForestClassifier(max_depth=max_depth_,
+                                                        n_estimators=n_estimators_))
+
+            # Fit model:
+            pipe.fit(X_train, np.array(label_train).ravel())
+
+            # Evaluate on test set:
+            pred = pipe.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the RFC classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for RFC Classifier")
+                plt.show()
+
+        return f_1_svc, f_1_knn, f_1_rfc
+
+    # Implement without sfs:
+    if not sfs:
+
+        # Grid-Search with SVC:
+        if svc:
+            params = [
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'svc__C': [1, 10, 100, 1000],
+                 'svc__kernel': ['rbf'],
+                 'svc__gamma': [0.001, 0.0001],
+                 'svc__class_weight': [None, 'balanced']},
+
+                {'smote': ['passthrough', SMOTE(random_state=42)],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'svc__C': [1, 10, 100, 1000],
+                 'svc__kernel': ['linear'],
+                 'svc__class_weight': [None, 'balanced']}
+            ]
+
+            pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), SVC())
+            gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
+            gs.fit(X_train, np.array(label_train).ravel())
+
+            # Display best parameters:
+
+            # This displays mean CV results for each parameter: Too lenghty.
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
+
+            best_params = gs.best_params_
+
+            print('The best parameters for the SVC classifier are: ')
+            for key, value in best_params.items():
+                print(key, ' : ', value)
+
+            print(f'The F1 score with the best parameter combination is {np.round(gs.best_score_, 2)} '
+                  )
+
+            # Extract CV score with the best parameter combination:
+            cv_scores = pd.DataFrame(gs.cv_results_).sort_values(by=['rank_test_score'])
+            best_cv = cv_scores.iloc[0]['split0_test_score':'split4_test_score']
+            print('The cross-validation scores for the best parameter combination are: ')
+            print(best_cv.head())
+
+            # Evaluate on test set:
+            pred = gs.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the SVC classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for SVC Classifier")
+                plt.show()
+        # KNN Classifier:
+        if knn:
+            params = [
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),
+                 # 'kneighborsclassifier__weights': ('uniform', 'distance'),
+                 'kneighborsclassifier__metric': ('minkowski', 'chebyshev')}
+            ]
+
+            pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), KNeighborsClassifier())
+            gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
+            gs.fit(X_train, np.array(label_train).ravel())
+
+            # Display best parameters:
+
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
+
+            best_params = gs.best_params_
+
+            print('The best parameters for the KNN classifier are: ')
+            for key, value in best_params.items():
+                print(key, ' : ', value)
+
+            print(f'The F1 score with the best parameter combination is {np.round(gs.best_score_, 2)} '
+                  )
+
+            # Extract CV score with the best parameter combination:
+            cv_scores = pd.DataFrame(gs.cv_results_).sort_values(by=['rank_test_score'])
+            best_cv = cv_scores.iloc[0]['split0_test_score':'split4_test_score']
+            print('The cross-validation scores for the best parameter combination are: ')
+            print(best_cv.head())
+
+            # Evaluate on test set:
+            pred = gs.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the KNN classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for KNN Classifier")
+                plt.show()
+        # RFC
+        if rfc:
+            params = [{
+                'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                'randomforestclassifier__n_estimators': [50, 100, 200],
+                'randomforestclassifier__max_depth': [4, 6, 10, 12],
+                # 'randomforestclassifier__max_features': ['auto', 'sqrt', 'log2']
+            }]
+
+            pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), RandomForestClassifier())
+            gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
+            gs.fit(X_train, label_train)
+
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
+
+            # get best parameters for display:
+            best_params = gs.best_params_
+
+            print('The best parameters for the RFC classifier are: ')
+            for key, value in best_params.items():
+                print(key, ' : ', value)
+
+            print(f'The F1 score with the best parameter combination is {np.round(gs.best_score_, 2)} '
+                  )
+
+            # Extract CV score with the best parameter combination:
+            cv_scores = pd.DataFrame(gs.cv_results_).sort_values(by=['rank_test_score'])
+            best_cv = cv_scores.iloc[0]['split0_test_score':'split4_test_score']
+            print('The cross-validation scores for the best parameter combination are: ')
+            print(best_cv.head())
+
+            # Evaluate on test set:
+            pred = gs.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the RFC classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for RFC Classifier")
+                plt.show()
+
+        if lrc:
+
+            params = [
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'logisticregression__C': np.logspace(-4, 4, 9),
+                 'logisticregression__class_weight': [None, 'balanced'],
+                 },
+            ]
+
+            pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), LogisticRegression())
+            gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
+            gs.fit(X_train, np.array(label_train).ravel())
+
+            # Display best parameters:
+            best_params = gs.best_params_
+
+            print('The best parameters for the Log Reg classifier are: ')
+            for key, value in best_params.items():
+                print(key, ' : ', value)
+
+            print(f'The F1 score with the best parameter combination is {np.round(gs.best_score_, 2)} '
+                  )
+
+            # Extract CV score with the best parameter combination:
+            cv_scores = pd.DataFrame(gs.cv_results_).sort_values(by=['rank_test_score'])
+            best_cv = cv_scores.iloc[0]['split0_test_score':'split4_test_score']
+            print('The cross-validation scores for the best parameter combination are: ')
+            print(best_cv.head())
+
+            # Evaluate on test set:
+            pred = gs.predict(X_test)
+            f1_score = metrics.f1_score(np.array(label_test), pred)
+            acc = metrics.accuracy_score(np.array(label_test), pred)
+            print(
+                f'The F1 score on the test set with the Log Reg classifier is {np.round(f1_score, 2)} and the accuracy is {np.round(acc, 2)}')
+            print()
+            # Confusion matrix:
+            if con_mtx:
+                cm = metrics.confusion_matrix(np.array(label_test), pred)
+                cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
+                plt.title("Confusion Matrix for Log Reg Classifier")
+                plt.show()
 
 # endregion
 
 ## region Load and plot data:
 # Note: Channel 1 has lower signal values than channel 2
-r1_ch1, r1_ch2 = read_data('data2/fc2.csv', normalize=True)
-r2_ch1, r2_ch2 = read_data('data2/fc3.csv', normalize=True)
-r3_ch1, r3_ch2 = read_data('data2/sc2.csv', normalize=True)
+r1_ch1, r1_ch2 = read_data('data3/Felix_1.csv', normalize=True)
+r2_ch1, r2_ch2 = read_data('data3/Felix_2.csv', normalize=True)
+r3_ch1, r3_ch2 = read_data('data3/Felix_3.csv', normalize=True)
+r4_ch1, r4_ch2 = read_data('data3/Felix_4.csv', normalize=True)
+r5_ch1, r5_ch2 = read_data('data3/Felix_5.csv', normalize=True)
+r6_ch1, r6_ch2 = read_data('data3/Felix_6.csv', normalize=True)
+r7_ch1, r7_ch2 = read_data('data3/Felix_7.csv', normalize=True)
+r8_ch1, r8_ch2 = read_data('data3/Felix_8.csv', normalize=True)
+
+r9_ch1, r9_ch2 = read_data('data3/Shafiq_1.csv', normalize=True)
+r10_ch1, r10_ch2 = read_data('data3/Shafiq_2.csv', normalize=True)
+r11_ch1, r11_ch2 = read_data('data3/Shafiq_3.csv', normalize=True)
+r12_ch1, r12_ch2 = read_data('data3/Shafiq_4.csv', normalize=True)
+r13_ch1, r13_ch2 = read_data('data3/Shafiq_5.csv', normalize=True)
+r14_ch1, r14_ch2 = read_data('data3/Shafiq_6.csv', normalize=True)
+r15_ch1, r15_ch2 = read_data('data3/Shafiq_7.csv', normalize=True)
+r16_ch1, r16_ch2 = read_data('data3/Shafiq_8.csv', normalize=True)
 # plot
-plot_data(r1_ch1, r1_ch2, 'Felix Cough 2')
-plot_data(r2_ch1, r2_ch2, 'Felix Cough 3')
-plot_data(r3_ch1, r3_ch2, 'Shafic Cough 2')
+plot_data(r1_ch1, r1_ch2, 'Felix 1')
+plot_data(r2_ch1, r2_ch2, 'Felix 2')
+plot_data(r3_ch1, r3_ch2, 'Felix 3')
+plot_data(r4_ch1, r4_ch2, 'Felix 4')
+plot_data(r5_ch1, r5_ch2, 'Felix 5')
+plot_data(r6_ch1, r6_ch2, 'Felix 6')
+plot_data(r7_ch1, r7_ch2, 'Felix 7')
+plot_data(r8_ch1, r8_ch2, 'Felix 8')
+
+plot_data(r9_ch1, r9_ch2, 'Felix 11')
+plot_data(r10_ch1, r10_ch2, 'Felix 21')
+plot_data(r11_ch1, r11_ch2, 'Felix 31')
+plot_data(r12_ch1, r12_ch2, 'Felix 41')
+plot_data(r13_ch1, r13_ch2, 'Felix 51')
+plot_data(r14_ch1, r14_ch2, 'Felix 61')
+plot_data(r15_ch1, r15_ch2, 'Felix 71')
+plot_data(r16_ch1, r16_ch2, 'Felix 81')
 
 # endregion
 
@@ -559,261 +837,50 @@ label_c, label_nc = create_labels(len(r1_ch1), cough_list)
 # endregion
 
 ## region Plot data with labels:
-# list_of_data = [ [dataset 1: ch1, ch2, labels], [dataset 2: ch1, ch2, labels], ... ]
-list_of_data = [[r1_ch1, r1_ch2, label_c], [r2_ch1, r2_ch2, label_c], [r3_ch1, r3_ch2, label_c]]
-plot_labels(list_of_data)
+# Collect all data into a list <list_of_data> in format:
+# [ [dataset 1: ch1, ch2, labels], [dataset 2: ch1, ch2, labels], ... ]
+
+list_of_data = [[r1_ch1, r1_ch2, label_c], [r2_ch1, r2_ch2, label_c], [r3_ch1, r3_ch2, label_c],
+                [r4_ch1, r4_ch2, label_c], [r5_ch1, r5_ch2, label_c], [r6_ch1, r6_ch2, label_c],
+                [r7_ch1, r7_ch2, label_c], [r8_ch1, r8_ch2, label_c], [r9_ch1, r9_ch2, label_c],
+                [r10_ch1, r10_ch2, label_c], [r11_ch1, r11_ch2, label_c], [r12_ch1, r12_ch2, label_c],
+                [r13_ch1, r13_ch2, label_c], [r14_ch1, r14_ch2, label_c], [r15_ch1, r15_ch2, label_c],
+                [r16_ch1, r16_ch2, label_c]]
+
+
+index = np.int(np.floor(20 / .015))
+
+for i in range(len(list_of_data)):
+    for j in range(3):
+        list_of_data[i][j] = list_of_data[i][j][index:]
+
+# This is for plotting purposes. This is the first subject:
+subject_1 = [[r1_ch1, r1_ch2, label_c], [r2_ch1, r2_ch2, label_c], [r3_ch1, r3_ch2, label_c],
+             [r4_ch1, r4_ch2, label_c], [r5_ch1, r5_ch2, label_c], [r6_ch1, r6_ch2, label_c],
+             [r7_ch1, r7_ch2, label_c], [r8_ch1, r8_ch2, label_c]]
+
+# This is for plotting purposes. This is the second subject:
+subject_2 = [[r9_ch1, r9_ch2, label_c], [r10_ch1, r10_ch2, label_c], [r11_ch1, r11_ch2, label_c],
+             [r12_ch1, r12_ch2, label_c],
+             [r13_ch1, r13_ch2, label_c], [r14_ch1, r14_ch2, label_c], [r15_ch1, r15_ch2, label_c],
+             [r16_ch1, r16_ch2, label_c]]
+
+# Plot first and second subject separately for viewing:
+plot_labels(subject_1)
+plot_labels(subject_2)
+
 # endregion
 
-## region Concatenate data:
+## region Concatenate data into dataframe:
 data = concatenate_data(list_of_data)
 
 # endregion
 
-## region partition into windows:
-# window length: 100, no overlap, data from both channels
-X, label_list = window_partition(data, 3, 200, 0)
+## region partition dataframe into windows:
+# window length: 250, no overlap, data from both channels
+X, label_list = window_partition(data, 3, 250, 0)
 # endregion
 
 ## region Implement ML Algorithms:
-implement_ml(X, label_list, sfs=True, svc=True, knn=True, rfc=True, k_range=range(35, 36))
+implement_ml(X, label_list)
 # endregion
-
-# ## region Split into train and test (2/3,1/3)
-#
-# index = np.int32(np.floor(X.shape[0] * 2 / 3))  # Index up to 2/3 of datapoints.
-#
-# X_train = X.iloc[0:index, :]  # First 2/3 data points
-# label_train = label_list.iloc[0:index]
-#
-# X_test = X.iloc[index:X.shape[0], :]
-# label_test = label_list.iloc[index:label_list.shape[0]]
-# # endregion
-#
-# ## region Implement ML: SVC
-#
-# start = timer.time()
-#
-# k_list = list()
-# f_1 = list()
-# parameters = list()
-#
-# # Iterate through number of features (dimensions):
-# for k in range(11, 13):
-#     df_train_fs = X_train[:]
-#
-#     print(f"Applying SFS with {k} dimensions")
-#     # Apply sequential feature selection keeping k dimensions:
-#     rdg_cls = RidgeClassifier(class_weight='balanced')
-#     sfs = SequentialFeatureSelector(rdg_cls, n_features_to_select=k, scoring='f1')
-#     sfs.fit(df_train_fs, np.array(label_train).ravel())
-#
-#     # Apply to test and train:
-#     df_train_fs = sfs.transform(df_train_fs)
-#     df_train_fs = pd.DataFrame(df_train_fs, columns=sfs.get_feature_names_out())
-#
-#     # For each dimension k, do a grid search over the best parameters of the SVC regressor:
-#     params = [
-#         {'standardscaler': ['passthrough', StandardScaler()],
-#          'svc__C': [1, 10, 100, 1000], 'svc__kernel': ['rbf'], 'svc__gamma': [0.001, 0.0001],
-#          'svc__class_weight': [None, 'balanced']},
-#         {'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
-#          'svc__C': [1, 10, 100, 1000], 'svc__kernel': ['linear'], 'svc__class_weight': [None, 'balanced']}
-#     ]
-#
-#     pipe = make_pipeline(StandardScaler(), SVC())
-#     gs = GridSearchCV(pipe, params, scoring='f1')
-#     gs.fit(df_train_fs, np.array(label_train).ravel())
-#
-#     # Store best f1 score for each dimension k:
-#     k_list.append(k)
-#     f_1.append(gs.best_score_)
-#     parameters.append(gs.best_params_)
-#
-# best_dim = k_list[np.array(f_1).argmax()]  # Retrieve best dimension
-# best_params = parameters[np.array(f_1).argmax()]  # Retrieve best parameters
-#
-# print(f'The optimal number of dimension is {best_dim} with'
-#       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
-#       f' with parameters {best_params}')
-#
-# end = timer.time()
-#
-# print(f'Elapsed time is {end - start} seconds')
-#
-# # Train with optimal parameters and dimensions:
-#
-# if best_params['svc__kernel'] == 'linear':
-#     pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
-#                          SVC(C=best_params['svc__C'], kernel=best_params['svc__kernel'],
-#                              class_weight=best_params['svc__class_weight']))
-#
-# if best_params['svc__kernel'] == 'rbf':
-#     pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
-#                          SVC(C=best_params['svc__C'], kernel=best_params['svc__kernel'],
-#                              gamma=best_params['svc__gamma'],
-#                              class_weight=best_params['svc__class_weight']))
-#
-# # Fit model:
-# pipe.fit(X_train, np.array(label_train).ravel())
-#
-# # Evaluate on test set:
-# pred = pipe.predict(X_test)
-# f1_score = metrics.f1_score(np.array(label_test), pred)
-# acc = metrics.accuracy_score(np.array(label_test), pred)
-# print(f'The F1 score on the test set is {f1_score} and the accuracy is {acc}')
-#
-# # Confusion matrix:
-# cm = metrics.confusion_matrix(np.array(label_test), pred)
-# cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-# plt.title("Confusion Matrix for SVC Classifier")
-# plt.show()
-#
-# # endregion
-#
-# ## region Implement ML: KNN
-#
-# start = timer.time()
-#
-# k_list = list()
-# f_1 = list()
-# parameters = list()
-# # Iterate through number of features (dimensions) 12-15:
-# for k in range(11, 13):
-#     df_train_fs = X_train[:]
-#
-#     print(f"Applying SFS with {k} dimensions")
-#     # Apply sequential feature selection keeping k dimensions:
-#     rdg_cls = RidgeClassifier(class_weight='balanced')
-#     sfs = SequentialFeatureSelector(rdg_cls, n_features_to_select=k, scoring='f1')
-#     sfs.fit(df_train_fs, np.array(label_train).ravel())
-#
-#     # Apply to test and train:
-#     df_train_fs = sfs.transform(df_train_fs)
-#     df_train_fs = pd.DataFrame(df_train_fs, columns=sfs.get_feature_names_out())
-#
-#     # For each dimension k, do a grid search over the best parameters of the SVC regressor:
-#     params = [
-#         {'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),  # 8,9,10
-#          'kneighborsclassifier__weights': ('uniform', 'distance'),
-#          'kneighborsclassifier__metric': ('minkowski', 'chebyshev')}
-#     ]
-#
-#     pipe = make_pipeline(StandardScaler(), KNeighborsClassifier())
-#     gs = GridSearchCV(pipe, params, scoring='f1')
-#     gs.fit(df_train_fs, np.array(label_train).ravel())
-#
-#     # Store best f1 score for each dimension k:
-#     k_list.append(k)
-#     f_1.append(gs.best_score_)
-#     parameters.append(gs.best_params_)
-#
-# best_dim = k_list[np.array(f_1).argmax()]  # Retrieve best dimension
-# best_params = parameters[np.array(f_1).argmax()]  # Retrieve best parameters
-#
-# print(f'The optimal number of dimension is {best_dim} with'
-#       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
-#       f' with parameters {best_params}')
-#
-# end = timer.time()
-#
-# print(f'Elapsed time is {end - start} seconds')
-#
-# # Train with optimal parameters and dimensions:
-# metric_ = best_params['kneighborsclassifier__metric']
-# n_neighbors_ = best_params['kneighborsclassifier__n_neighbors']
-# weights_ = best_params['kneighborsclassifier__weights']
-#
-# pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
-#                      KNeighborsClassifier(metric=metric_, n_neighbors=n_neighbors_,
-#                                           weights=weights_))
-# # Fit model:
-# pipe.fit(X_train, np.array(label_train).ravel())
-#
-# # Evaluate on test set:
-# pred = pipe.predict(X_test)
-# f1_score = metrics.f1_score(np.array(label_test), pred)
-# acc = metrics.accuracy_score(np.array(label_test), pred)
-# print(f'The F1 score on the test set is {f1_score} and the accuracy is {acc}')
-#
-# # Confusion matrix:
-# cm = metrics.confusion_matrix(np.array(label_test), pred)
-# cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-# plt.title("Confusion Matrix for KNN Classifier")
-# plt.show()
-#
-# # endregion
-#
-# ## region Implement ML: RFC
-#
-# start = timer.time()
-#
-# k_list = list()
-# f_1 = list()
-# parameters = list()
-# # Iterate through number of features (dimensions) 12-15:
-# for k in range(12, 15):
-#     df_train_fs = X_train[:]
-#
-#     print(f"Applying SFS with {k} dimensions")
-#     # Apply sequential feature selection keeping k dimensions:
-#     rdg_cls = RidgeClassifier(class_weight='balanced')
-#     sfs = SequentialFeatureSelector(rdg_cls, n_features_to_select=k, scoring='f1')
-#     sfs.fit(df_train_fs, np.array(label_train).ravel())
-#
-#     # Apply to test and train:
-#     df_train_fs = sfs.transform(df_train_fs)
-#     df_train_fs = pd.DataFrame(df_train_fs, columns=sfs.get_feature_names_out())
-#
-#     # For each dimension k, do a grid search over the best parameters of the SVC regressor:
-#     params = [{
-#         'randomforestclassifier__n_estimators': [100, 200],
-#         'randomforestclassifier__max_depth': [4, 5, 6],
-#         'randomforestclassifier__max_features': ['auto', 'sqrt', 'log2']
-#     }]
-#
-#     pipe = make_pipeline(StandardScaler(), RandomForestClassifier())
-#     gs = GridSearchCV(pipe, params, scoring='f1')
-#     gs.fit(np.float32(df_train_fs), np.float32(np.array(label_train).ravel()))
-#     # converted data to float32 per warning.
-#
-#     # Store best f1 score for each dimension k:
-#     k_list.append(k)
-#     f_1.append(gs.best_score_)
-#     parameters.append(gs.best_params_)
-#
-# best_dim = k_list[np.array(f_1).argmax()]  # Retrieve best dimension
-# best_params = parameters[np.array(f_1).argmax()]  # Retrieve best parameters
-#
-# print(f'The optimal number of dimension is {best_dim} with'
-#       f' an F1 score of {np.round(np.array(f_1).max(), 3)}'
-#       f' with parameters {best_params}')
-#
-# end = timer.time()
-#
-# print(f'Elapsed time is {end - start} seconds')
-#
-# # Train with optimal parameters and dimensions:
-# max_depth_ = best_params['randomforestclassifier__max_depth']
-# max_features_ = best_params['randomforestclassifier__max_features']
-# n_estimators_ = best_params['randomforestclassifier__n_estimators']
-#
-# pipe = make_pipeline(SequentialFeatureSelector(rdg_cls, n_features_to_select=best_dim, scoring='f1'),
-#                      StandardScaler(),
-#                      RandomForestClassifier(max_depth=max_depth_, max_features=max_features_,
-#                                             n_estimators=n_estimators_))
-# # Fit model:
-# pipe.fit(X_train, np.array(label_train).ravel())
-#
-# # Evaluate on test set:
-# pred = pipe.predict(X_test)
-# f1_score = metrics.f1_score(np.array(label_test), pred)
-# acc = metrics.accuracy_score(np.array(label_test), pred)
-# print(f'The F1 score on the test set is {f1_score} and the accuracy is {acc}')
-#
-# # Confusion matrix:
-# cm = metrics.confusion_matrix(np.array(label_test), pred)
-# cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
-# plt.title("Confusion Matrix for Random Forest Classifier")
-# plt.show()
-#
-# # endregion
