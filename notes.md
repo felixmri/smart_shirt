@@ -19,28 +19,11 @@
 
 
 
-
-
-
-
-
-
-
-
-
-
-## Notes on model performance:
-
-* removed the limit on fff 
-  [2-12 dims tried, 2 sensors]:
-    * svc: 9,.65
-    * knn: 3, .57
-    * rfc: 2, .49
-
-* How does FFT of each label look?
-  * The below excluded the first point of fft, otherwise not sym.
-      * ![img_1.png](images/img_1.png)
-      * ![img_3.png](images/img_3.png)
+ ## Steps for next time:
+* Clean up the parameter search and upload to GH.
+* Recreate running jupyterlab from yml file. 
+* Publish. 
+* Good Job! 
 
 
 

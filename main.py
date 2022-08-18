@@ -1,5 +1,6 @@
 ## region Import Dependencies and define functions:
 import warnings
+
 warnings.filterwarnings('ignore')
 
 # For data processing & plotting:
@@ -29,16 +30,17 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import RidgeClassifier, LogisticRegression, Perceptron
 
+
 # Only for GPU based computing: [ comment out on CPU ]
 # import os  # Need both of these, run before importing cuml.
 
-#os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-#os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
-#from cuml.svm import SVC
-#from cuml.neighbors import KNeighborsClassifier
-#from cuml.ensemble import RandomForestClassifier
-#from sklearn.linear_model import RidgeClassifier
+# from cuml.svm import SVC
+# from cuml.neighbors import KNeighborsClassifier
+# from cuml.ensemble import RandomForestClassifier
+# from sklearn.linear_model import RidgeClassifier
 
 
 # Define function to read and normalize data:
@@ -73,6 +75,7 @@ def read_data(file_path, normalize=True):
 
     return pd.Series(ch_1), pd.Series(ch_2)
 
+
 # Define function to plot data:
 def plot_data(ch1, ch2, title):
     # define time axis:
@@ -86,6 +89,7 @@ def plot_data(ch1, ch2, title):
     axs[1].plot(time, ch2)
     axs[1].set_ylabel("Channel 2")
     plt.show()
+
 
 # Define function to create labels
 def create_labels(time_length, cough_event):
@@ -117,6 +121,7 @@ def create_labels(time_length, cough_event):
     label_nc = label_nc.iloc[:, 0]
 
     return labels, label_nc
+
 
 # Define function to plot labeled data:
 def plot_labels(list_of_data):
@@ -158,6 +163,7 @@ def plot_labels(list_of_data):
 
     plt.show()
 
+
 # Define function to concatenate data into dataframe used for ML:
 def concatenate_data(list_of_data_plt):
     """
@@ -184,6 +190,7 @@ def concatenate_data(list_of_data_plt):
     data.reset_index(drop=True, inplace=True)
 
     return data
+
 
 # Define function to partition into windows and calculate window-wise metrics
 def window_partition(data, n_channels, window_size, overlap, balanced=True):
@@ -303,6 +310,7 @@ def window_partition(data, n_channels, window_size, overlap, balanced=True):
 
     return X, label_list
 
+
 # Define function to take processed data and implement various ML algorithms
 def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=True, k_range=range(40, 45), con_mtx=True):
     '''
@@ -320,17 +328,10 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
     :return: None
     '''
 
-    # Find index to get 2/3 of the data for training:
-    index = np.int32(np.floor(X.shape[0] * (3 / 4)))
-    # Split into test and train:
-    X_train = X.iloc[0:index, :]  # First 2/3 data points
-    label_train = label_list.iloc[0:index]
-
-    X_test = X.iloc[index:X.shape[0], :]
-    label_test = label_list.iloc[index:label_list.shape[0]]
-
+    # Split data into test/train in .75/.25 split:
     X_train, X_test, label_train, label_test = train_test_split(X, label_list, test_size=.25, random_state=42)
     print('Implementing ML algorithms... Train/Test split used is 75/25.')
+
     # Implement sfs:
     if sfs:
 
@@ -783,6 +784,7 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
                 plt.title("Confusion Matrix for Log Reg Classifier")
                 plt.show()
 
+
 # endregion
 
 ## region Load and plot data:
@@ -846,7 +848,6 @@ list_of_data = [[r1_ch1, r1_ch2, label_c], [r2_ch1, r2_ch2, label_c], [r3_ch1, r
                 [r10_ch1, r10_ch2, label_c], [r11_ch1, r11_ch2, label_c], [r12_ch1, r12_ch2, label_c],
                 [r13_ch1, r13_ch2, label_c], [r14_ch1, r14_ch2, label_c], [r15_ch1, r15_ch2, label_c],
                 [r16_ch1, r16_ch2, label_c]]
-
 
 index = np.int(np.floor(20 / .015))
 
