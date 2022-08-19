@@ -1,8 +1,9 @@
-name: final_projet
+name: smart_shirt
 channels:
   - conda-forge
   - defaults
 dependencies:
+  - jupyterlab=3.3.0
   - imbalanced-learn=0.7.0=py_1
   - intel-openmp=2021.4.0=hecd8cb5_3538
   - joblib=1.1.0=pyhd3eb1b0_0
@@ -107,4 +108,4 @@ dependencies:
     - traitlets==5.3.0
     - wcwidth==0.2.5
     - webencodings==0.5.1
-prefix: /Users/felix/opt/anaconda3/envs/final_projet
+
