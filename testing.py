@@ -1,8 +1,10 @@
 ## region Import Dependencies and define functions:
 import warnings
+
 warnings.filterwarnings('ignore')
 
 # For data processing & plotting:
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -13,6 +15,8 @@ from scipy.stats import entropy
 from scipy.signal import detrend
 
 # For ML:
+from sklearn.model_selection import StratifiedShuffleSplit
+# from sklearn.pipeline import make_pipeline
 from imblearn.pipeline import make_pipeline
 from imblearn.over_sampling import SMOTE, RandomOverSampler, ADASYN
 
@@ -27,17 +31,16 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import RidgeClassifier, LogisticRegression, Perceptron
 
+# Only for GPU based computing:
+import os  # Need both of these, run before importing cuml.
 
-# Only for GPU based computing: [ comment out on CPU ]
-# import os  # Need both of these, run before importing cuml.
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 
-# os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-
-# from cuml.svm import SVC
-# from cuml.neighbors import KNeighborsClassifier
-# from cuml.ensemble import RandomForestClassifier
-# from sklearn.linear_model import RidgeClassifier
+#from cuml.svm import SVC
+#from cuml.neighbors import KNeighborsClassifier
+#from cuml.ensemble import RandomForestClassifier
+#from sklearn.linear_model import RidgeClassifier, LogisticRegression
 
 
 # Define function to read and normalize data:
@@ -319,16 +322,23 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
     :param svc: SVC classifier
     :param knn: KNN classifier
     :param rfc: RF Classifier
+    :param lrc: Logistic Regression Classifier
     :param k_range: range of dimensions for sequential feature selection
     :param con_mtx: If true, plot confusion matrix.
     :param balanced: If true, trains model with balanced data.
     :return: None
     '''
 
-    # Split data into test/train in .75/.25 split:
-    X_train, X_test, label_train, label_test = train_test_split(X, label_list, test_size=.25, random_state=42)
-    print('Implementing ML algorithms... Train/Test split used is 75/25.')
+    # Find index to get 2/3 of the data for training:
+    index = np.int32(np.floor(X.shape[0] * (3 / 4)))
+    # Split into test and train:
+    X_train = X.iloc[0:index, :]  # First 2/3 data points
+    label_train = label_list.iloc[0:index]
 
+    X_test = X.iloc[index:X.shape[0], :]
+    label_test = label_list.iloc[index:label_list.shape[0]]
+
+    X_train, X_test, label_train, label_test = train_test_split(X, label_list, test_size=.25, random_state=42)
     # Implement sfs:
     if sfs:
 
@@ -591,21 +601,32 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
         # Grid-Search with SVC:
         if svc:
             params = [
-
-                {'smote': [SMOTE(random_state=42)],
-                 'standardscaler': [MinMaxScaler()],
-                 'svc__C': [1000],
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'svc__C': [1, 10, 100, 1000],
                  'svc__kernel': ['rbf'],
-                 'svc__gamma': [.001],
-                 'svc__class_weight': [None]}
+                 'svc__gamma': [0.001, 0.0001],
+                 'svc__class_weight': [None, 'balanced']},
+
+                {'smote': ['passthrough', SMOTE(random_state=42)],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'svc__C': [1, 10, 100, 1000],
+                 'svc__kernel': ['linear'],
+                 'svc__class_weight': [None, 'balanced']}
             ]
 
-            pipe = make_pipeline(SMOTE(), StandardScaler(), SVC())
-            gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
-            print('Performing fit for the SVC classifier...')
+            pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), SVC())
+            gs = GridSearchCV(pipe, params, scoring='f1', cv=5, n_jobs=15)
+            print('Performing grid-search for the SVC classifier...')
+
             gs.fit(X_train, np.array(label_train).ravel())
 
             # Display best parameters:
+
+            # This displays mean CV results for each parameter: Too lenghty.
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
+
             best_params = gs.best_params_
 
             print('The best parameters for the SVC classifier are: ')
@@ -637,20 +658,24 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
         # KNN Classifier:
         if knn:
             params = [
-                {'smote': [ADASYN(random_state=42)],
-                 'standardscaler': [StandardScaler()],
-                 'kneighborsclassifier__n_neighbors': [10],
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'kneighborsclassifier__n_neighbors': (7, 8, 9, 10),
                  # 'kneighborsclassifier__weights': ('uniform', 'distance'),
-                 'kneighborsclassifier__metric': ['minkowski']}
+                 'kneighborsclassifier__metric': ('minkowski', 'chebyshev')}
             ]
 
             pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), KNeighborsClassifier())
             gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
-            print('Performing fit for the KNN classifier...')
+            print('Performing grid-search for the KNN classifier...')
+
             gs.fit(X_train, np.array(label_train).ravel())
 
-
             # Display best parameters:
+
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
+
             best_params = gs.best_params_
 
             print('The best parameters for the KNN classifier are: ')
@@ -682,18 +707,21 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
         # RFC
         if rfc:
             params = [{
-                'smote': [SMOTE(random_state=42)],
-                'standardscaler': ['passthrough'],
-                'randomforestclassifier__n_estimators': [100],
-                'randomforestclassifier__max_depth': [12],
+                'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                'randomforestclassifier__n_estimators': [50, 100, 200],
+                'randomforestclassifier__max_depth': [4, 6, 10, 12],
                 # 'randomforestclassifier__max_features': ['auto', 'sqrt', 'log2']
             }]
 
             pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), RandomForestClassifier())
             gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
-            print('Performing fit for the Randon Forest classifier...')
+            print('Performing grid-search for the RFC classifier...')
+
             gs.fit(X_train, label_train)
 
+            # print('The mean test scores for each parameter are: ')
+            # print(gs.cv_results_['mean_test_score'])
 
             # get best parameters for display:
             best_params = gs.best_params_
@@ -724,20 +752,21 @@ def implement_ml(X, label_list, sfs=False, svc=True, knn=True, rfc=True, lrc=Tru
                 cm_display = metrics.ConfusionMatrixDisplay(cm).plot()
                 plt.title("Confusion Matrix for RFC Classifier")
                 plt.show()
-
+        # LRC
         if lrc:
 
             params = [
-                {'smote': [SMOTE(random_state=42)],
-                 'standardscaler': [MinMaxScaler()],
-                 'logisticregression__C': [10],
-                 'logisticregression__class_weight': ['None'],
+                {'smote': ['passthrough', SMOTE(random_state=42), RandomOverSampler(), ADASYN()],
+                 'standardscaler': ['passthrough', StandardScaler(), MinMaxScaler()],
+                 'logisticregression__C': np.logspace(-4, 4, 9),
+                 'logisticregression__class_weight': [None, 'balanced'],
                  },
             ]
 
             pipe = make_pipeline(SMOTE(random_state=42), StandardScaler(), LogisticRegression())
             gs = GridSearchCV(pipe, params, scoring='f1', cv=5)
-            print('Performing fit for the Logistic Regression classifier...')
+            print('Performing grid-search for the LRC classifier...')
+
             gs.fit(X_train, np.array(label_train).ravel())
 
             # Display best parameters:
@@ -822,18 +851,20 @@ cough_list = [[20, 25], [40, 45], [60, 65], [80, 85], [100, 105]]
 # create labels:
 label_c, label_nc = create_labels(len(r1_ch1), cough_list)
 
+
 # endregion
 
 ## region Plot data with labels:
-# Collect all data into a list <list_of_data> in format:
-# [ [dataset 1: ch1, ch2, labels], [dataset 2: ch1, ch2, labels], ... ]
 
+# list_of_data = [ [dataset 1: ch1, ch2, labels], [dataset 2: ch1, ch2, labels], ... ]
 list_of_data = [[r1_ch1, r1_ch2, label_c], [r2_ch1, r2_ch2, label_c], [r3_ch1, r3_ch2, label_c],
                 [r4_ch1, r4_ch2, label_c], [r5_ch1, r5_ch2, label_c], [r6_ch1, r6_ch2, label_c],
                 [r7_ch1, r7_ch2, label_c], [r8_ch1, r8_ch2, label_c], [r9_ch1, r9_ch2, label_c],
                 [r10_ch1, r10_ch2, label_c], [r11_ch1, r11_ch2, label_c], [r12_ch1, r12_ch2, label_c],
                 [r13_ch1, r13_ch2, label_c], [r14_ch1, r14_ch2, label_c], [r15_ch1, r15_ch2, label_c],
                 [r16_ch1, r16_ch2, label_c]]
+
+# Remove first 20 seconds of data:
 
 index = np.int(np.floor(20 / .015))
 
@@ -860,9 +891,10 @@ plot_labels(subject_2)
 
 ## region Concatenate data into dataframe:
 data = concatenate_data(list_of_data)
+
 # endregion
 
-## region partition dataframe into windows:
+## region partition into windows:
 # window length: 250, no overlap, data from both channels
 X, label_list = window_partition(data, 3, 250, 0)
 # endregion
@@ -871,4 +903,5 @@ X, label_list = window_partition(data, 3, 250, 0)
 implement_ml(X, label_list)
 # endregion
 
+##
 
